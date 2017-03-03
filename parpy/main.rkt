@@ -1,5 +1,8 @@
 #lang typed/racket
 
+;; too early to decide what should be exported
+(provide (all-defined-out))
+
 ;; represents a list of python lines
 (define-type Block (Listof String))
 (define-predicate block? Block)
@@ -38,12 +41,7 @@
 (define ((indentstr [n : Natural]) [str : String]) : String
   (string-append (apply string (for/list : (Listof Char) ([i n]) #\space)) str))
 
-(define (displaylines [l : (Listof String)]) : Void
-  (for-each displayln l))
-
-(define (py-testeq? [a : Sexp] [b : Sexp])
-  (py-flatten `(assertEqual ,a ,b)))
-
+;; ... looks like this is becoming some kind of flatten-statement?
 ;; flatten an s-exp, put it in a list, but allow splicing
 (define (py-flatten-l [exp : Sexp]) : Block
   (match exp
