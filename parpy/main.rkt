@@ -53,20 +53,20 @@
     [(list 'if test (list thens ...))
      (block-indent (cons (~a "if "(py-flatten test)":")
                          (apply append (map py-flatten-l thens))))]
+    [(list '= a b)
+     (list (~a (py-flatten a) " = " (py-flatten b)))]
     [other (list (py-flatten other))]))
+
+(define-type Infix-Operator
+  (U '== '< '% '+ '- '* '/))
+(define-predicate infix-operator? Infix-Operator)
 
 ;; convert an s-expression to a python string,
 ;; e.g. '(a b c) into "a(b, c)"
 (define (py-flatten [a : Sexp]) : String
   (match a
-    [(list '== a b)
-     (infixop "==" a b)]
-    [(list '= a b)
-     (~a (py-flatten a) " = " (py-flatten b))]
-    [(list '< a b)
-     (infixop "<" a b)]
-    [(list '% a b)
-     (infixop "%" a b)]
+    [(list (? infix-operator? op) a b)
+     (infixop (symbol->string op) a b)]
     [(list 'not a)
      (paren-wrap (space-append "not" (py-flatten a)))]
     [(list 'asub arr idx)
@@ -151,7 +151,8 @@
 ;; convert various symbols to other strings
 (define (pyfunname [n : Symbol]) : Symbol
   (match n
-    ['assertEqual '|self.assertEquals|]
+    ['assertEqual '|self.assertEqual|]
+    ['ass-eq? '|self.assertEqual|]
     ['assertTrue '|self.assertTrue|]
     ['assertFalse '|self.assertFalse|]
     ['assertRaises '|self.assertRaises|]
