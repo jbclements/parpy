@@ -14,16 +14,24 @@
    (cons (~a "class "name"(unittest.TestCase):")
          (flattenblocks blocks))))
 
+;; CLEANUP NEEDED IN T, T2, T1
+
 ;; given a name and a set of test sexps, generate
 ;; python tests named test<name>0, test<name>1, etc.
 (: t (Symbol Sexp * -> Block))
 (define (t name . sexps) : Block
+  (t2 name sexps))
+
+(: t2 (Symbol (Listof Sexp) -> Block))
+(define (t2 name sexps) : Block
   (id-check name)
   (flattenblocks
    (for/list : (Listof Block)
      ([str (in-list sexps)]
       [i (in-naturals)])
      (t1 (~a name i) str))))
+
+
 
 ;; format a test case string, as it would appear in
 ;; a class extending TestCase:
@@ -37,47 +45,149 @@
   (cons (first strs)
         (map (indentstr 4) (rest strs))))
 
-;; given a number and a string, indent the string by the number of chars
+;; given a number and a string, indent the string by the number of
+;; chars
 (define ((indentstr [n : Natural]) [str : String]) : String
-  (string-append (apply string (for/list : (Listof Char) ([i n]) #\space)) str))
+  (string-append (apply string (for/list : (Listof Char) ([i n])
+                                 #\space))
+                 str))
 
-;; ... looks like this is becoming some kind of flatten-statement?
-;; flatten an s-exp, put it in a list, but allow splicing
-(define (py-flatten-l [exp : Sexp]) : Block
+;; given a top-level expression, flatten it into a block.
+(define (py-flatten-toplevel [exp : Sexp]) : Block
   (match exp
-    [(cons 'block (? block? b)) b]
+    [(list '%testclass (? symbol? classname) (list (? symbol?
+                                                      testnames)
+                                                   lolotest ...)
+           ...)
+     (testclass classname (map t2
+                               (cast testnames (Listof Symbol))
+                               (cast lolotest
+                                     (Listof (Listof Sexp)))))]
+    [(cons '%testclass _)
+     (raise-argument-error 'py-flatten-toplevel
+                           "legal top-level form" 0 exp)]
+    [_ (py-flatten-stmt exp)]))
+
+;; flatten a list of stmt
+(define (py-flatten-stmts [stmts : (Listof Sexp)]) : Block
+  (apply append (map py-flatten-stmt stmts)))
+
+;; flatten an s-exp representing a stmt, put it in a list
+(define (py-flatten-stmt [stmt : Sexp]) : Block
+  (define (err)
+    (raise-argument-error 'py-flatten-stmt
+                          "legal stmt" 0 stmt))
+  (match stmt
+    ;; allows escaping back into list of strings:
+    [(cons '%block (? block? b)) b]
+    [(cons '%block _) (err)]
+    ;; flatten a sequence of stmts:
+    [(list '%begin stmts ...) (py-flatten-stmts stmts)]
+    [(cons '%begin _) (err)]
     [(list 'for (? symbol? loopvar) range bodys ...)
      (block-indent
       (cons (~a "for "loopvar" in "(py-flatten range)":")
-            (apply append (map py-flatten-l bodys))))]
+            (py-flatten-stmts bodys)))]
+    [(cons 'for _) (err)]
     [(list 'if test (list thens ...))
      (block-indent (cons (~a "if "(py-flatten test)":")
-                         (apply append (map py-flatten-l thens))))]
-    [(list '= a b)
-     (list (~a (py-flatten a) " = " (py-flatten b)))]
+                         (py-flatten-stmts thens)))]
+    [(list 'if test (list thens ...) (list elses ...))
+     (append
+      (block-indent (cons (~a "if "(py-flatten test)":")
+                          (py-flatten-stmts thens)))
+      (block-indent (cons "else:"
+                          (py-flatten-stmts elses))))]
+    [(cons 'if _) (err)]
+    [(list '= (? symbol? a) b)
+     ;; warning... only lvals allowable here...
+     (list (~a (symbol->string a) " = " (py-flatten b)))]
+    [(cons '= _) (err)]
+    [(list '%aset! array-exp idx-exp new-val)
+     (list (~a (py-flatten array-exp)
+               (bracket-wrap (py-flatten idx-exp))
+               " = " (py-flatten new-val)))]
+    [(cons '%aset! _) (err)]
+    [(list '%define (list (? symbol? name) (? symbol? args) ...)
+           bodies ...)
+     (py-def (cons name (cast args (Listof Symbol))) bodies)]
+    [(list '%define (list (? symbol? name) (? symbol? args) ...)
+           bodies ...)
+     (py-def (cons name (cast args (Listof Symbol))) bodies)]
+    [(cons '%define _) (err)]
+    [(list '%% (? string? comment) body)
+     (cons (string-append "# " comment)
+           (py-flatten-stmt body))]
+    [(list '%check-selfmut (? symbol? name)
+           (list (? symbol? funname) init otherargs ...)
+           result)
+     (py-flatten-stmt
+      (assert-mut name init
+                  (cons funname (cons name otherargs))
+                  'None
+                  result))]
+    [(cons '%check-selfmut _) (err)]
+    [(list '%check-eq? a b)
+     (py-flatten-stmt (list '|self.assertEqual| a b))]
+    [(cons '%check-eq? _) (err)]
+    [(list '%check-raises? exn fun args ...)
+     (py-flatten-stmt
+      (append (list '|self.assertRaises| exn fun) args))]
+    [(list '%cond clauses ...)
+     (py-flatten-stmt
+      (unfold-cond clauses))]
+    ;; must be an expression used as a stmt:
     [other (list (py-flatten other))]))
 
+;; given a list of cond clauses, unfold them into a python stmt
+(define (unfold-cond [clauses : (Listof Sexp)]) : Sexp
+  (match clauses
+    ['() (raise-argument-error 'unfold-cond
+                               "nonempty list of clauses"
+                               0 clauses)]
+    [(list _)
+     (raise-argument-error 'unfold-cond
+                           "cond with more than one clause"
+                           0 clauses)]
+    ;; irritatingly, must special-case deeper to ensure that result is not
+    ;; a list of stmts, but a single stmt; need begin?
+    [(list (cons test results) (cons 'else final-results))
+     (list 'if test results final-results)]
+    [(list (cons test results) _)
+     (raise-argument-error 'unfold-cond
+                           "cond where final clause is an else"
+                           0 clauses)] 
+    [(list (cons test results) clauses ...)
+     (list 'if test results (list (unfold-cond clauses)))]))
+
 (define-type Infix-Operator
-  (U '== '< '% '+ '- '* '/))
+  (U '== '< '<= '% '+ '- '* '/))
 (define-predicate infix-operator? Infix-Operator)
 
 ;; convert an s-expression to a python string,
 ;; e.g. '(a b c) into "a(b, c)"
 (define (py-flatten [a : Sexp]) : String
+  (define (err)
+    (raise-argument-error 'py-flatten
+                          "legal expression" 0 a))
   (match a
     [(list (? infix-operator? op) a b)
      (infixop (symbol->string op) a b)]
     [(list 'not a)
      (paren-wrap (space-append "not" (py-flatten a)))]
-    [(list 'asub arr idx)
+    [(list '%sub arr idx)
      (string-append
       (py-flatten arr)
       (bracket-wrap (py-flatten idx)))]
+    [(cons '%sub _)
+     (err)]
     [(list 'return a)
      (space-append "return" (py-flatten a))]
-    [(list 'noquote (? string? s)) s]
-    [(cons 'arr (? list? args))
+    [(list '%noquote (? string? s)) s]
+    [(cons '%arr (? list? args))
      (pylist (map py-flatten args))]
+    [(cons '%tup (? list? args))
+     (arglist (map py-flatten args))]
     [(list (? symbol? fn) args ...)
      (define funname (pyfunname fn))
      (id-check funname)
@@ -99,15 +209,11 @@
 ;; the original value has been mutated to the later one.
 (define (assert-mut [name : Symbol] [initval : Sexp]
                     [call : Sexp] [callresult : Sexp]
-                    [expected : Sexp]) : (Pairof 'block Block)
-  (exps-block `((= ,name ,initval)
-                (assertEqual ,call ,callresult)
-                (assertEqual ,name ,expected))))
-
-;; a general mutation check. Ensure that after evaluating the expression,
-;; the original value has been mutated to the later one.
-(define (exps-block [exps : (Listof Sexp)]) : (Pairof 'block Block)
-  (cons 'block (map py-flatten exps)))
+                    [expected : Sexp]) : Sexp
+  `(%begin
+    (= ,name ,initval)
+    (%check-eq? ,call ,callresult)
+    (%check-eq? ,name ,expected)))
 
 ;; append with spaces between
 (: space-append (String * -> String))
@@ -148,14 +254,12 @@
 
 (check-equal? (pylist '("a" "b")) "[a, b]")
 
+;; getting rid of this...
 ;; convert various symbols to other strings
 (define (pyfunname [n : Symbol]) : Symbol
   (match n
-    ['assertEqual '|self.assertEqual|]
-    ['ass-eq? '|self.assertEqual|]
     ['assertTrue '|self.assertTrue|]
     ['assertFalse '|self.assertFalse|]
-    ['assertRaises '|self.assertRaises|]
     [other other]))
 
 (require typed/rackunit)
@@ -186,38 +290,42 @@
 ;; a standard __init__ function
 (define (init [fields : (Listof Symbol)]) : Block
   (py-def `(__init__ self ,@fields)
-          (cons 'block
-                (for/list : Block ([a (in-list fields)])
-                  (~a "self." a " = "a)))))
+          (list
+           (cons '%block
+                 (for/list : Block ([a (in-list fields)])
+                   (~a "self." a " = "a))))))
 
 ;; given a list of fields, return a block representing
 ;; a standard __repr__ function
 (define (reprdef [classname : Symbol]
                  [fields : (Listof Symbol)]) : Block
-  (define thisfields : (Listof String)
-    (for/list : (Listof String) ([f (in-list fields)])
-      (~a "self."f)))
+  (define thisfields
+    (for/list : (Listof Symbol) ([f (in-list fields)])
+      (string->symbol (~a "self."f))))
   (define formatstrs : (Listof Sexp)
-    (for/list ([i (in-range (length fields))]) '(noquote "%r")))
+    (for/list ([i (in-range (length fields))]) '(%noquote "%r")))
   (py-def '(__repr__ self)
           (list
-           'block
-           (~a "return \""(py-flatten (cons classname formatstrs))
-               "\" % "(arglist thisfields)))))
+           ;; note freaky use of py-flatten result as string!
+           `(return (% ,(py-flatten (cons classname formatstrs))
+                       (%tup ,@thisfields))))))
+
+
 
 ;; given the classname and a list of fields, return 
 (define (eqdef [classname : Symbol]
                [fields : (Listof Symbol)])
   : Block
-  (py-def
-   '(__eq__ self other)
-   (append
-    (list 'block
-          (~a "return (" (py-flatten
-                          `(== (type other) ,classname))))
-    (for/list : Block ([a (in-list fields)])
-      (~a "and (self."a" == other."a")"))
-    (list ")"))))
+  (py-def '(__eq__ self other)
+          (list
+           (cons 'block
+                 (append
+                  (list
+                   (~a "return (" (py-flatten
+                                   `(== (type other) ,classname))))
+                  (for/list : Block ([a (in-list fields)])
+                    (~a "and (self."a" == other."a")"))
+                  (list ")"))))))
 
 (define (neqdef) : Block
   (py-def '(__ne__ self other)
@@ -226,8 +334,7 @@
 ;; given a name and a list of sexps, produce a "def" line
 (define (py-def [args : (Listof Sexp)] [body : (Listof Sexp)]) : Block
   (cons (~a "def " (py-flatten args) ":")
-        (map (indentstr 4)
-             (apply append (map py-flatten-l body)))))
+        (map (indentstr 4) (py-flatten-stmts body))))
 
 ;; given a path-string and a block, write it to the file
 (define (displaytofile [f : Path-String] [block : Block]) : Void
@@ -236,3 +343,110 @@
       (for-each (λ (l) (displayln l port)) block))
     #:exists 'truncate))
 
+
+(check-not-exn (λ () (assert-mut 'zz 342 '(f zz) "boo" 343)))
+
+(check-equal? (py-flatten '(%tup 3 "bc")) "(3, \"bc\")")
+
+(check-equal?
+ (reprdef 'zig '(zag zazz))
+ '("def __repr__(self):"
+   "    return (\"zig(%r, %r)\" % (self.zag, self.zazz))"))
+
+(check-equal?
+ (py-flatten-stmt
+  '(%% "swap two elements in an array"
+       (%define (swap_elts obj idx1 idx2)
+         (= temp (%sub obj idx1))
+         (%aset! obj idx1 (%sub obj idx2))
+         (%aset! obj idx2 temp))))
+ (cons "# swap two elements in an array"
+       (py-def '(swap_elts obj idx1 idx2)
+               '((= temp (%sub obj idx1))
+                 (%aset! obj idx1 (%sub obj idx2))
+                 (%aset! obj idx2 temp)))))
+
+(check-equal?
+ (py-flatten-stmt
+  '(%check-selfmut o (insert_h (%arr 3 9 12 11 4 9) 3 11)
+                   (%arr 3 9 11 12 4 9)))
+ (py-flatten-stmt
+  (assert-mut 'o '(%arr 3 9 12 11 4 9)
+              '(insert_h o 3 11)  'None
+              '(%arr 3 9 11 12 4 9))))
+
+;; regression test:
+(check-equal?
+ (py-flatten-stmt
+  (assert-mut 'o '(%arr 3 9 12 11 4 9)
+              '(insert_h o 3 11)  'None
+              '(%arr 3 9 11 12 4 9)))
+ (py-flatten-stmt
+  '(%block
+    "o = [3, 9, 12, 11, 4, 9]"
+    "self.assertEqual(insert_h(o, 3, 11), None)"
+    "self.assertEqual(o, [3, 9, 11, 12, 4, 9])")))
+
+
+
+(check-equal?
+ (unfold-cond
+  '([(< zig zay) 123]
+    [tuvalu "bongo boy"]
+    [else (+ 3 4)]))
+ '(if (< zig zay)
+      (123)
+      ((if tuvalu
+          ("bongo boy")
+          ((+ 3 4))))))
+
+(check-equal?
+ (py-flatten-stmt
+  '(%cond [(< zig zay) 123]
+          [tuvalu "bongo boy"]
+          [else (+ 3 4)]))
+ (py-flatten-stmt
+  '(if (< zig zay)
+       (123)
+       ((if tuvalu
+            ("bongo boy")
+            ((+ 3 4)))))))
+
+(check-equal?
+ (py-flatten-stmt '(%aset! (f x) (g x) (+ 3 4)))
+ '("f(x)[g(x)] = (3 + 4)"))
+
+
+(check-equal?
+ (py-flatten-stmt
+  '(%check-raises? IndexError f 34 78 1))
+ '("self.assertRaises(IndexError, f, 34, 78, 1)"))
+
+;; essentially a regression test:
+(check-equal?
+ (py-flatten-toplevel
+  '(%testclass
+    Lab2Tests
+    [SelectionSort
+     (%check-eq? (selection_sort (%arr 9 8 18 7 8))
+               (%arr 7 8 8 9 18))
+     (%check-eq? (move_smallest_to_posn (%arr 9 8 18 7 8) 2)
+               (%arr 9 8 7 18 8))]
+    [InsertionSort
+     (%check-selfmut o (insert (%arr 3 9 12 11 4 9) 3 11)
+                     (%arr 3 9 11 12 4 9))
+     (%check-selfmut o (insert (%arr 3 9 12 12 4 9) 2 11)
+                     (%arr 3 9 11 12 4 9))]))
+ (testclass
+  'Lab2Tests
+  (list
+   (t 'SelectionSort
+      '(%check-eq? (selection_sort (%arr 9 8 18 7 8))
+                (%arr 7 8 8 9 18))
+      '(%check-eq? (move_smallest_to_posn (%arr 9 8 18 7 8) 2)
+                (%arr 9 8 7 18 8)))
+   (t 'InsertionSort
+      '(%check-selfmut o (insert (%arr 3 9 12 11 4 9) 3 11)
+                       (%arr 3 9 11 12 4 9))
+      '(%check-selfmut o (insert (%arr 3 9 12 12 4 9) 2 11)
+                       (%arr 3 9 11 12 4 9))))))
