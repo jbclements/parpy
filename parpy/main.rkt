@@ -54,6 +54,9 @@
 
 ;; given a top-level expression, flatten it into a block.
 (define (py-flatten-toplevel [exp : Sexp]) : Block
+  (define (err)
+    (raise-argument-error 'py-flatten-toplevel
+                          "legal top-level stmt" 0 exp))
   (match exp
     [(list '%testclass (? symbol? classname) (list (? symbol?
                                                       testnames)
@@ -63,9 +66,17 @@
                                (cast testnames (Listof Symbol))
                                (cast lolotest
                                      (Listof (Listof Sexp)))))]
-    [(cons '%testclass _)
-     (raise-argument-error 'py-flatten-toplevel
-                           "legal top-level form" 0 exp)]
+    [(cons '%testclass _) (err)]
+    [(list '%% (? string? comment) body)
+     (cons (string-append "# " comment)
+           (py-flatten-toplevel body))]
+    ;; flatten a sequence of top-level-stmts
+    [(list '%begin stmts ...)
+     (apply append (map py-flatten-toplevel stmts))]
+    [(cons '%begin _) (err)]
+    [(list 'import (? symbol? module))
+     (list (string-append "import " (symbol->string module)))]
+    [(cons 'import _) (err)]
     [_ (py-flatten-stmt exp)]))
 
 ;; flatten a list of stmt
@@ -118,6 +129,11 @@
     [(list '%% (? string? comment) body)
      (cons (string-append "# " comment)
            (py-flatten-stmt body))]
+    [(list '%check-mut (? symbol? name) init
+           call result newval)
+     (py-flatten-stmt
+      (assert-mut name init call result newval))]
+    [(cons '%check-mut _) (err)]
     [(list '%check-selfmut (? symbol? name)
            (list (? symbol? funname) init otherargs ...)
            result)
@@ -161,7 +177,7 @@
      (list 'if test results (list (unfold-cond clauses)))]))
 
 (define-type Infix-Operator
-  (U '== '< '<= '% '+ '- '* '/))
+  (U '== '< '<= '% '+ '- '* '/ 'and 'or))
 (define-predicate infix-operator? Infix-Operator)
 
 ;; convert an s-expression to a python string,
@@ -192,6 +208,7 @@
      (define funname (pyfunname fn))
      (id-check funname)
      (~a funname (arglist (map py-flatten args)))]
+    [(? list? l) (err)]
     [(? string? s) (string-append "\"" s "\"")]
     [(? symbol? s)
      (id-check s)
@@ -450,3 +467,5 @@
                        (%arr 3 9 11 12 4 9))
       '(%check-selfmut o (insert (%arr 3 9 12 12 4 9) 2 11)
                        (%arr 3 9 11 12 4 9))))))
+
+(check-equal? (py-flatten '(or 3 4)) "(3 or 4)")
