@@ -68,8 +68,11 @@
                                      (Listof (Listof Sexp)))))]
     [(cons '%testclass _) (err)]
     [(list '%% (? string? comment) body)
-     (cons (string-append "# " comment)
+     (append (comment->block comment)
            (py-flatten-toplevel body))]
+    [(list '%% (? string? comment))
+     (comment->block comment)]
+    [(cons '%% _) (err)]
     ;; flatten a sequence of top-level-stmts
     [(list '%begin stmts ...)
      (apply append (map py-flatten-toplevel stmts))]
@@ -77,6 +80,9 @@
     [(list 'import (? symbol? module))
      (list (string-append "import " (symbol->string module)))]
     [(cons 'import _) (err)]
+    [(list 'class (? symbol? classname) (list (? symbol? fields) ...))
+     (classdef classname (cast fields (Listof Symbol)))]
+    [(cons 'class _) (err)]
     [_ (py-flatten-stmt exp)]))
 
 ;; flatten a list of stmt
@@ -132,8 +138,11 @@
      (py-def (cons name (cast args (Listof Symbol))) bodies)]
     [(cons '%define _) (err)]
     [(list '%% (? string? comment) body)
-     (cons (string-append "# " comment)
+     (append (comment->block comment)
            (py-flatten-stmt body))]
+    [(list '%% (? string? comment))
+     (comment->block comment)]
+    [(cons '%% _) (err)]
     [(list '%check-mut (? symbol? name) init
            call result newval)
      (py-flatten-stmt
@@ -159,6 +168,12 @@
       (unfold-cond clauses))]
     ;; must be an expression used as a stmt:
     [other (list (py-flatten other))]))
+
+;; given a string, return a block representing a comment
+(define (comment->block [str : String]) : Block
+  (define strs : Block (regexp-split #px"\n" str))
+  (map (λ ([l : String]) (string-append "# " l)) strs))
+
 
 ;; given a list of cond clauses, unfold them into a python stmt
 (define (unfold-cond [clauses : (Listof Sexp)]) : Sexp
@@ -515,3 +530,25 @@
 (check-equal? (py-flatten-stmt '(while (< x 3)
                                   (print x)))
               (list "while (x < 3):" "    print(x)"))
+
+;; regression:
+(check-equal?
+ (py-flatten-toplevel '(class Cons (first rest)))
+ '("class Cons():"
+   "    def __init__(self, first, rest):"
+   "        self.first = first"
+   "        self.rest = rest"
+   "    "
+   "    def __repr__(self):"
+   "        return (\"Cons(%r, %r)\" % (self.first, self.rest))"
+   "    "
+   "    def __eq__(self, other):"
+   "        block(\"return ((type(other) == Cons)\", \"and (self.first == other.first)\", \"and (self.rest == other.rest)\", \")\")"
+   "    "
+   "    def __ne__(self, other):"
+   "        return (not (other == self))"))
+
+
+(check-equal? (comment->block "abcd") '("# abcd"))
+(check-equal? (comment->block "abcd\nefg")
+              '("# abcd" "# efg"))
