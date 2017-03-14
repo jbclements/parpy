@@ -131,15 +131,18 @@
                " = " (py-flatten new-val)))]
     [(cons '%aset! _) (err)]
     [(list '%define (list (? symbol? name) (? symbol? args) ...)
+           (? string? docstr)
            bodies ...)
-     (py-def (cons name (cast args (Listof Symbol))) bodies)]
+     (py-def (cons name (cast args (Listof Symbol)))
+             #:docstring docstr
+             bodies)]
     [(list '%define (list (? symbol? name) (? symbol? args) ...)
            bodies ...)
      (py-def (cons name (cast args (Listof Symbol))) bodies)]
     [(cons '%define _) (err)]
     [(list '%% (? string? comment) body)
      (append (comment->block comment)
-           (py-flatten-stmt body))]
+             (py-flatten-stmt body))]
     [(list '%% (? string? comment))
      (comment->block comment)]
     [(cons '%% _) (err)]
@@ -226,6 +229,13 @@
      (pylist (map py-flatten args))]
     [(cons '%tup (? list? args))
      (arglist (map py-flatten args))]
+    [(list 'λ (list (? symbol? args) ...) body)
+     (paren-wrap
+      (string-append "lambda " (commasep
+                                (map symbol->string
+                                     (cast args (Listof Symbol))))
+                     ": " (py-flatten body)))]
+    [(cons 'λ _) (err)]
     [(list (? symbol? fn) args ...)
      (define funname (pyfunname fn))
      (id-check funname)
@@ -235,6 +245,9 @@
     [(? symbol? s)
      (id-check s)
      (symbol->string s)]
+    [(? boolean? b)
+     (cond [b "True"]
+           [else "False"])]
     [other (~a a)]))
 
 ;; given a string, return the string that encodes it in Python
@@ -242,6 +255,14 @@
   (define body-strs : (Listof String)
     (map char-encode (string->list s)))
   (string-append "\"" (apply string-append body-strs) "\""))
+
+;; given a string, return a docstring that encodes it in Python
+;; note that not all of the special chars need to be encoded,
+;; but I believe that it doesn't hurt.
+(define (docstring-encode [s : String]) : String
+  (define body-strs : (Listof String)
+    (map char-encode (string->list s)))
+  (string-append "\"\"\"" (apply string-append body-strs) "\"\"\""))
 
 ;; given a character, produce the string that encodes it
 ;; (possibly incomplete)
@@ -387,13 +408,13 @@
   : Block
   (py-def '(__eq__ self other)
           (list
-           (cons 'block
+           (cons '%block
                  (append
                   (list
                    (~a "return (" (py-flatten
                                    `(== (type other) ,classname))))
                   (for/list : Block ([a (in-list fields)])
-                    (~a "and (self."a" == other."a")"))
+                    (~a "  and (self."a" == other."a")"))
                   (list ")"))))))
 
 (define (neqdef) : Block
@@ -401,9 +422,89 @@
           '((return (not (== other self))))))
 
 ;; given a name and a list of sexps, produce a "def" line
-(define (py-def [args : (Listof Sexp)] [body : (Listof Sexp)]) : Block
+(define (py-def [args : (Listof Sexp)]
+                #:docstring [docstr : (U String #f) #f]
+                [body : (Listof Sexp)]) : Block
+  (define withret (add-return body))
+  (define stmt-strs (py-flatten-stmts withret))
+  (define body-block (cond [docstr (cons (docstring-encode docstr)
+                                         stmt-strs)]
+                           [else stmt-strs]))
   (cons (~a "def " (py-flatten args) ":")
-        (map (indentstr 4) (py-flatten-stmts body))))
+        (map (indentstr 4) body-block)))
+
+;; given a list of statements, add 'return' to the expressions
+;; in tail position
+(define (add-return [stmts : (Listof Sexp)]) : (Listof Sexp)
+  (match stmts
+    [(cons l '()) (list (add-return-stmt l))]
+    [(cons f r) (cons f (add-return-stmt r))]))
+
+;; given a statement, add 'return' to the expressions in tail
+;; position
+(define (add-return-stmt [stmt : Sexp]) : Sexp
+  (define (give-up)
+    (fprintf (current-error-port)
+             "giving up on adding return to stmt: ~e\n"
+             stmt)
+    stmt)
+  (define (err)
+    (raise-argument-error 'add-return-stmt
+                          "legal stmt" 0 stmt))
+  (match stmt
+    [(cons '%block _) (give-up)]
+    [(list '%begin stmts ...)
+     (list '%begin (add-return stmts))]
+    [(cons '%begin _) (err)]
+    [(list 'for (? symbol? loopvar) range bodys ...) stmt]
+    [(cons 'for _) (err)]
+    [(list 'while test bodys ...) stmt]
+    [(cons 'while _) (err)]
+    [(list 'if test (list thens ...))
+     (list 'if test (add-return thens) '((return None)))]
+    [(list 'if test (list thens ...) (list elses ...))
+     (list 'if test (add-return thens) (add-return elses))]
+    [(cons 'if _) (err)]
+    [(list '= (? symbol? a) b) stmt]
+    [(cons '= _) (err)]
+    [(list '%aset! array-exp idx-exp new-val) stmt]
+    [(list '%define (list (? symbol? name) (? symbol? args) ...)
+           (? string? docstr)
+           bodies ...)
+     stmt]
+    [(list '%define (list (? symbol? name) (? symbol? args) ...)
+           bodies ...)
+     stmt]
+    [(list '%% (? string? comment) body)
+     (list '%% comment (add-return-stmt body))]
+    [(list '%% (? string? comment))
+     (comment->block comment)]
+    [(cons '%% _) (err)]
+    [(list '%check-mut (? symbol? name) init
+           call result newval)
+     (py-flatten-stmt
+      (assert-mut name init call result newval))]
+    [(cons '%check-mut _) (err)]
+    [(list '%check-selfmut (? symbol? name)
+           (list (? symbol? funname) init otherargs ...)
+           result)
+     (py-flatten-stmt
+      (assert-mut name init
+                  (cons funname (cons name otherargs))
+                  'None
+                  result))]
+    [(cons '%check-selfmut _) (err)]
+    [(list '%check-eq? a b)
+     (py-flatten-stmt (list '|self.assertEqual| a b))]
+    [(cons '%check-eq? _) (err)]
+    [(list '%check-raises? exn fun args ...)
+     (py-flatten-stmt
+      (append (list '|self.assertRaises| exn fun) args))]
+    [(list '%cond clauses ...)
+     (py-flatten-stmt
+      (unfold-cond clauses))]
+    ;; must be an expression used as a stmt:
+    [other (list (py-flatten other))]))
 
 ;; given a path-string and a block, write it to the file
 (define (displaytofile [f : Path-String] [block : Block]) : Void
@@ -543,7 +644,10 @@
    "        return (\"Cons(%r, %r)\" % (self.first, self.rest))"
    "    "
    "    def __eq__(self, other):"
-   "        block(\"return ((type(other) == Cons)\", \"and (self.first == other.first)\", \"and (self.rest == other.rest)\", \")\")"
+   "        return ((type(other) == Cons)"
+   "          and (self.first == other.first)"
+   "          and (self.rest == other.rest)"
+   "        )"
    "    "
    "    def __ne__(self, other):"
    "        return (not (other == self))"))
@@ -552,3 +656,16 @@
 (check-equal? (comment->block "abcd") '("# abcd"))
 (check-equal? (comment->block "abcd\nefg")
               '("# abcd" "# efg"))
+
+(check-equal? (py-flatten '(or #f #t)) "(False or True)")
+
+(check-equal? (py-flatten '(λ (a b) (< a b)))
+              "(lambda a, b: (a < b))")
+
+(check-equal? (docstring-encode "abc\"\"\"def")
+              "\"\"\"abc\\\"\\\"\\\"def\"\"\"")
+
+(check-equal? (py-def '(zig zag) #:docstring "do the thing" '(17))
+              '("def zig(zag):"
+                "    \"\"\"do the thing\"\"\""
+                "    return 17"))
