@@ -100,6 +100,11 @@
       (cons (~a "for "loopvar" in "(py-flatten range)":")
             (py-flatten-stmts bodys)))]
     [(cons 'for _) (err)]
+    [(list 'while test bodys ...)
+     (block-indent
+      (cons (~a "while "(py-flatten test)":")
+            (py-flatten-stmts bodys)))]
+    [(cons 'while _) (err)]
     [(list 'if test (list thens ...))
      (block-indent (cons (~a "if "(py-flatten test)":")
                          (py-flatten-stmts thens)))]
@@ -195,8 +200,10 @@
      (string-append
       (py-flatten arr)
       (bracket-wrap (py-flatten idx)))]
-    [(cons '%sub _)
-     (err)]
+    [(cons '%sub _) (err)]
+    [(list '%o obj other)
+     (string-append (py-flatten obj) "." (py-flatten other))]
+    [(cons '%o _) (err)]
     [(list 'return a)
      (space-append "return" (py-flatten a))]
     [(list '%noquote (? string? s)) s]
@@ -207,13 +214,43 @@
     [(list (? symbol? fn) args ...)
      (define funname (pyfunname fn))
      (id-check funname)
-     (~a funname (arglist (map py-flatten args)))]
+     (~a funname (arglist (py-flatten-args args)))]
     [(? list? l) (err)]
-    [(? string? s) (string-append "\"" s "\"")]
+    [(? string? s) (string-encode s)]
     [(? symbol? s)
      (id-check s)
      (symbol->string s)]
     [other (~a a)]))
+
+;; given a string, return the string that encodes it in Python
+(define (string-encode [s : String]) : String
+  (define body-strs : (Listof String)
+    (map char-encode (string->list s)))
+  (string-append "\"" (apply string-append body-strs) "\""))
+
+;; given a character, produce the string that encodes it
+;; (possibly incomplete)
+(define (char-encode [ch : Char]) : String
+  (match ch
+    [#\newline "\\n"]
+    [#\\ "\\"]
+    [#\" "\\\""]
+    [otherchar (string otherchar)]))
+
+;; flatten args; if we see a keyword, turn it into a
+;; foo=bar pair. So, e.g., '(3 4 #:abc 5 6) => '("3" "4" "abc=5" "6")
+(define (py-flatten-args [args : (Listof Sexp)]) : (Listof String)
+  (match args
+    ['() '()]
+    [(list (? keyword? k) val rests ...)
+     (cons (string-append (keyword->string k) "=" (py-flatten val))
+           (py-flatten-args rests))]
+    [(cons f r) (cons (py-flatten f) (py-flatten-args r))]))
+
+(check-equal? (py-flatten-args '(3 4 #:abc 5 6))
+              '("3" "4" "abc=5" "6"))
+(check-equal? (py-flatten-args '(3 4 #:abc 5 #:zz 6))
+              '("3" "4" "abc=5" "zz=6"))
 
 ;; signal an error if the given identifier is not a legal python identifier
 (define (id-check [s : Symbol]) : Void
@@ -469,3 +506,12 @@
                        (%arr 3 9 11 12 4 9))))))
 
 (check-equal? (py-flatten '(or 3 4)) "(3 or 4)")
+
+(check-equal? (py-flatten '(%o def ghi)) "def.ghi")
+(check-equal? (py-flatten '(%o def (ghi jkl))) "def.ghi(jkl)")
+(check-equal? (py-flatten "abc\r\n\t\\\"def")
+              "\"abc\r\\n\t\\\\\"def\"")
+
+(check-equal? (py-flatten-stmt '(while (< x 3)
+                                  (print x)))
+              (list "while (x < 3):" "    print(x)"))
