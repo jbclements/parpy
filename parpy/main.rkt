@@ -656,3 +656,13 @@
               '(if (< x 3) ((return (+ 4 5))) ((return None))))
 (check-equal? (add-return-stmt '(%begin 3 4 5))
               '(%begin 3 4 (return 5)))
+(check-equal? (add-return-stmt '(%cond [(< pre_elt elt)
+                                        (%aset! arr idx elt)
+                                        None]
+                                       [else
+                                        (%aset! arr idx pre_elt)]))
+              '(%cond [(< pre_elt elt)
+                       (%aset! arr idx elt)
+                       (return None)]
+                      [else
+                       (%aset! arr idx pre_elt)]))
