@@ -121,9 +121,12 @@
       (block-indent (cons "else:"
                           (py-flatten-stmts elses))))]
     [(cons 'if _) (err)]
+    ;; only lvalues allowable on the left-hand-side of =:
     [(list '= (? symbol? a) b)
-     ;; warning... only lvals allowable here...
      (list (~a (symbol->string a) " = " (py-flatten b)))]
+    [(list '= (list '%o expr (? symbol? field)) b)
+     (list (~a (py-flatten (list '%o expr field))
+               " = " (py-flatten b)))]
     [(cons '= _) (err)]
     [(list '%aset! array-exp idx-exp new-val)
      (list (~a (py-flatten array-exp)
@@ -380,10 +383,8 @@
 ;; a standard __init__ function
 (define (init [fields : (Listof Symbol)]) : Block
   (py-def `(__init__ self ,@fields)
-          (list
-           (cons '%block
-                 (for/list : Block ([a (in-list fields)])
-                   (~a "self." a " = "a))))))
+          (for/list ([a (in-list fields)])
+            `(= (%o self ,a) ,a))))
 
 ;; given a list of fields, return a block representing
 ;; a standard __repr__ function
@@ -397,8 +398,8 @@
   (py-def '(__repr__ self)
           (list
            ;; note freaky use of py-flatten result as string!
-           `(return (% ,(py-flatten (cons classname formatstrs))
-                       (%tup ,@thisfields))))))
+           `(% ,(py-flatten (cons classname formatstrs))
+               (%tup ,@thisfields)))))
 
 
 
@@ -419,7 +420,7 @@
 
 (define (neqdef) : Block
   (py-def '(__ne__ self other)
-          '((return (not (== other self))))))
+          '((not (== other self)))))
 
 ;; given a name and a list of sexps, produce a "def" line
 (define (py-def [args : (Listof Sexp)]
@@ -438,7 +439,7 @@
 (define (add-return [stmts : (Listof Sexp)]) : (Listof Sexp)
   (match stmts
     [(cons l '()) (list (add-return-stmt l))]
-    [(cons f r) (cons f (add-return-stmt r))]))
+    [(cons f r) (cons f (add-return r))]))
 
 ;; given a statement, add 'return' to the expressions in tail
 ;; position
@@ -454,19 +455,16 @@
   (match stmt
     [(cons '%block _) (give-up)]
     [(list '%begin stmts ...)
-     (list '%begin (add-return stmts))]
+     (cons '%begin (add-return stmts))]
     [(cons '%begin _) (err)]
-    [(list 'for (? symbol? loopvar) range bodys ...) stmt]
-    [(cons 'for _) (err)]
-    [(list 'while test bodys ...) stmt]
-    [(cons 'while _) (err)]
+    [(cons 'for _) stmt]
+    [(cons 'while _) stmt]
     [(list 'if test (list thens ...))
-     (list 'if test (add-return thens) '((return None)))]
+     (add-return-stmt `(if ,test ,thens (None)))]
     [(list 'if test (list thens ...) (list elses ...))
      (list 'if test (add-return thens) (add-return elses))]
     [(cons 'if _) (err)]
-    [(list '= (? symbol? a) b) stmt]
-    [(cons '= _) (err)]
+    [(cons '= _) stmt]
     [(list '%aset! array-exp idx-exp new-val) stmt]
     [(list '%define (list (? symbol? name) (? symbol? args) ...)
            (? string? docstr)
@@ -475,36 +473,18 @@
     [(list '%define (list (? symbol? name) (? symbol? args) ...)
            bodies ...)
      stmt]
-    [(list '%% (? string? comment) body)
-     (list '%% comment (add-return-stmt body))]
-    [(list '%% (? string? comment))
-     (comment->block comment)]
-    [(cons '%% _) (err)]
-    [(list '%check-mut (? symbol? name) init
-           call result newval)
-     (py-flatten-stmt
-      (assert-mut name init call result newval))]
-    [(cons '%check-mut _) (err)]
-    [(list '%check-selfmut (? symbol? name)
-           (list (? symbol? funname) init otherargs ...)
-           result)
-     (py-flatten-stmt
-      (assert-mut name init
-                  (cons funname (cons name otherargs))
-                  'None
-                  result))]
-    [(cons '%check-selfmut _) (err)]
-    [(list '%check-eq? a b)
-     (py-flatten-stmt (list '|self.assertEqual| a b))]
-    [(cons '%check-eq? _) (err)]
-    [(list '%check-raises? exn fun args ...)
-     (py-flatten-stmt
-      (append (list '|self.assertRaises| exn fun) args))]
-    [(list '%cond clauses ...)
-     (py-flatten-stmt
-      (unfold-cond clauses))]
+    [(cons '%% _) stmt]
+    [(cons '%check-mut _) stmt]
+    [(cons '%check-selfmut _) stmt]
+    [(cons '%check-eq? _) stmt]
+    [(cons '%check-raises? _) stmt]
+    [(list '%cond (list clause-elts ...) ...)
+     ;; NB treating clauses as lists of statements okay only because
+     ;; add-return ignores all but last element of list:
+     (cons '%cond (map add-return (cast clause-elts
+                                        (Listof (Listof Sexp)))))]
     ;; must be an expression used as a stmt:
-    [other (list (py-flatten other))]))
+    [other (list 'return stmt)]))
 
 ;; given a path-string and a block, write it to the file
 (define (displaytofile [f : Path-String] [block : Block]) : Void
@@ -669,3 +649,10 @@
               '("def zig(zag):"
                 "    \"\"\"do the thing\"\"\""
                 "    return 17"))
+
+(check-equal? (add-return-stmt '(f 3 3))
+              '(return (f 3 3)))
+(check-equal? (add-return-stmt '(if (< x 3) ((+ 4 5))))
+              '(if (< x 3) ((return (+ 4 5))) ((return None))))
+(check-equal? (add-return-stmt '(%begin 3 4 5))
+              '(%begin 3 4 (return 5)))
