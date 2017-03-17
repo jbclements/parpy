@@ -122,11 +122,8 @@
                           (py-flatten-stmts elses))))]
     [(cons 'if _) (err)]
     ;; only lvalues allowable on the left-hand-side of =:
-    [(list '= (? symbol? a) b)
-     (list (~a (symbol->string a) " = " (py-flatten b)))]
-    [(list '= (list '%o expr (? symbol? field)) b)
-     (list (~a (py-flatten (list '%o expr field))
-               " = " (py-flatten b)))]
+    [(list '= (? lvalue? a) b)
+     (list (~a (py-flatten a) " = " (py-flatten b)))]
     [(cons '= _) (err)]
     [(list '%aset! array-exp idx-exp new-val)
      (list (~a (py-flatten array-exp)
@@ -149,6 +146,13 @@
     [(list '%% (? string? comment))
      (comment->block comment)]
     [(cons '%% _) (err)]
+    [(list 'return a)
+     (list (space-append "return" (py-flatten a)))]
+    [(cons 'return _) (err)]
+    [(list 'raise expr)
+     (list (space-append "raise" (py-flatten expr)))]
+    [(cons 'raise _) (err)]
+    ;; testing forms:
     [(list '%check-mut (? symbol? name) init
            call result newval)
      (py-flatten-stmt
@@ -174,6 +178,15 @@
       (unfold-cond clauses))]
     ;; must be an expression used as a stmt:
     [other (list (py-flatten other))]))
+
+;; is this an lvalue?
+(define (lvalue? [s : Sexp]) : Boolean
+  (match s
+    [(? symbol? sym) (legal-id? sym)]
+    [(list '%tup (? lvalue? subvals) ...) #t]
+    [(list '%o _ (? symbol? sym)) (legal-id? sym)]
+    [(list '%sub _ _) #t]
+    [else #f]))
 
 ;; given a string, return a block representing a comment
 (define (comment->block [str : String]) : Block
@@ -213,8 +226,8 @@
     (raise-argument-error 'py-flatten
                           "legal expression" 0 a))
   (match a
-    [(list (? infix-operator? op) a b)
-     (infixop (symbol->string op) a b)]
+    [(list (? infix-operator? op) args ...)
+     (infixop (symbol->string op) args)]
     [(list 'not a)
      (paren-wrap (space-append "not" (py-flatten a)))]
     [(list '%sub arr idx)
@@ -225,8 +238,6 @@
     [(list '%o obj other)
      (string-append (py-flatten obj) "." (py-flatten other))]
     [(cons '%o _) (err)]
-    [(list 'return a)
-     (space-append "return" (py-flatten a))]
     [(list '%noquote (? string? s)) s]
     [(cons '%arr (? list? args))
      (pylist (map py-flatten args))]
@@ -242,16 +253,21 @@
     [(list (? symbol? fn) args ...)
      (define funname (pyfunname fn))
      (id-check funname)
-     (~a funname (arglist (py-flatten-args args)))]
+     (~a (dots-convert (symbol->string funname))
+         (arglist (py-flatten-args args)))]
     [(? list? l) (err)]
     [(? string? s) (string-encode s)]
     [(? symbol? s)
      (id-check s)
-     (symbol->string s)]
+     (dots-convert (symbol->string s))]
     [(? boolean? b)
      (cond [b "True"]
            [else "False"])]
     [other (~a a)]))
+
+;; given a string representing an identifier, convert >'s to .'s
+(define (dots-convert [s : String]) : String
+  (regexp-replace* #px">" s "."))
 
 ;; given a string, return the string that encodes it in Python
 (define (string-encode [s : String]) : String
@@ -292,11 +308,35 @@
               '("3" "4" "abc=5" "zz=6"))
 
 ;; signal an error if the given identifier is not a legal python identifier
+;; note: this is intentionally very restrictive, to simplify reasoning
+;; about what can and can't be an identifier.
+;; NOTE : this one *DOES* allow >'s, which will later be converted to dots
 (define (id-check [s : Symbol]) : Void
-  (unless (regexp-match? #px"^[.a-zA-Z0-9_]+$" (symbol->string s))
+  (unless (legal-id? s)
     (raise-argument-error 'id-check
                           "symbol legal as python identifier"
                           0 s)))
+
+;; is this a legal id?
+(define (legal-id? [s : Symbol]) : Boolean
+  (regexp-match? #px"^[.a-zA-Z0-9_]([.>a-zA-Z0-9_]*[.a-zA-Z0-9_])?$"
+                 (symbol->string s)))
+
+;; no >'s please
+(define (base-id? [s : Symbol]) : Boolean
+  (regexp-match? #px"^[.a-zA-Z0-9_]+$"
+                 (symbol->string s)))
+
+(check-equal? (lvalue? 'abc) #t)
+(check-equal? (lvalue? 'abc>def) #t)
+(check-equal? (lvalue? '(%tup (%sub (f x) g) (%o 3 zz))) #t)
+(check-equal? (lvalue? '(%tup (%sub (f x) g) (f x))) #f)
+
+(check-equal? (dots-convert "bb>ac>d")
+              "bb.ac.d")
+(check-exn #px"legal as python identifier"
+           (λ () (id-check 'abcd>)))
+(check-equal? (id-check 'b) (void))
 
 ;; a mutation check. Ensure that after evaluating the expression,
 ;; the original value has been mutated to the later one.
@@ -324,10 +364,10 @@
   (string-append "[" str "]"))
 
 ;; insert operator with strings, wrap with parens
-(define (infixop [op : String] [arg1 : Sexp] [arg2 : Sexp])
-  (paren-wrap (space-append (py-flatten arg1) op (py-flatten arg2))))
-
-(check-equal? (infixop "==" 'abc "def") "(abc == \"def\")")
+(: infixop (String (Listof Sexp) -> String))
+(define (infixop op args)
+  (paren-wrap
+   (apply space-append (add-between (map py-flatten args) op))))
 
 ;; concat strings with , between
 (define (commasep [strs : (Listof String)]) : String
@@ -408,7 +448,12 @@
                [fields : (Listof Symbol)])
   : Block
   (py-def '(__eq__ self other)
-          (list
+          `((and
+             (== (type other) ,classname)
+             ,@(for/list : (Listof Sexp) ([a (in-list fields)])
+                 (ann `(== (%o self ,a) (%o other ,a))
+                      Sexp))))
+          #;(list
            (cons '%block
                  (append
                   (list
@@ -474,6 +519,8 @@
            bodies ...)
      stmt]
     [(cons '%% _) stmt]
+    [(cons 'return _) stmt]
+    [(cons 'raise _) stmt]
     [(cons '%check-mut _) stmt]
     [(cons '%check-selfmut _) stmt]
     [(cons '%check-eq? _) stmt]
@@ -483,6 +530,7 @@
      ;; add-return ignores all but last element of list:
      (cons '%cond (map add-return (cast clause-elts
                                         (Listof (Listof Sexp)))))]
+    [(cons '%cond _) (err)]
     ;; must be an expression used as a stmt:
     [other (list 'return stmt)]))
 
@@ -624,10 +672,7 @@
    "        return (\"Cons(%r, %r)\" % (self.first, self.rest))"
    "    "
    "    def __eq__(self, other):"
-   "        return ((type(other) == Cons)"
-   "          and (self.first == other.first)"
-   "          and (self.rest == other.rest)"
-   "        )"
+   "        return ((type(other) == Cons) and (self.first == other.first) and (self.rest == other.rest))"
    "    "
    "    def __ne__(self, other):"
    "        return (not (other == self))"))
@@ -666,3 +711,12 @@
                        (return None)]
                       [else
                        (%aset! arr idx pre_elt)]))
+
+(check-equal? (py-flatten '(and 3 4 5)) "(3 and 4 and 5)")
+(check-equal? (infixop "==" (list 'abc "def")) "(abc == \"def\")")
+
+(check-equal? (py-flatten-stmt '(raise IndexError))
+              '("raise IndexError"))
+
+(check-equal? (add-return-stmt '(return 19)) '(return 19))
+(check-equal? (add-return-stmt '(raise 23847)) '(raise 23847))
