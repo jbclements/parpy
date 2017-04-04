@@ -411,13 +411,12 @@
                   [fields : (Listof Symbol)]) : Block
   (block-indent
    (cons
-    (~a "class "classname"():")
+    (~a "class "classname":")
     (flattenblocks
      (list
       (init fields)
       (reprdef classname fields)
-      (eqdef classname fields)
-      (neqdef))))))
+      (eqdef classname fields))))))
 
 ;; given a list of fields, return a block representing
 ;; a standard __init__ function
@@ -434,11 +433,13 @@
     (for/list : (Listof Symbol) ([f (in-list fields)])
       (string->symbol (~a "self."f))))
   (define formatstrs : (Listof Sexp)
-    (for/list ([i (in-range (length fields))]) '(%noquote "%r")))
+    (for/list ([i (in-range (length fields))]) '(%noquote "{!r}")))
   (py-def '(__repr__ self)
           (list
+           `(%o ,(py-flatten (cons classname formatstrs))
+                (format ,@thisfields))
            ;; note freaky use of py-flatten result as string!
-           `(% ,(py-flatten (cons classname formatstrs))
+           #;`(% ,(py-flatten (cons classname formatstrs))
                (%tup ,@thisfields)))))
 
 
@@ -549,7 +550,7 @@
 (check-equal?
  (reprdef 'zig '(zag zazz))
  '("def __repr__(self):"
-   "    return (\"zig(%r, %r)\" % (self.zag, self.zazz))"))
+   "    return \"zig({!r}, {!r})\".format(self.zag, self.zazz)"))
 
 (check-equal?
  (py-flatten-stmt
@@ -663,19 +664,17 @@
 ;; regression:
 (check-equal?
  (py-flatten-toplevel '(class Cons (first rest)))
- '("class Cons():"
+ '("class Cons:"
    "    def __init__(self, first, rest):"
    "        self.first = first"
    "        self.rest = rest"
    "    "
    "    def __repr__(self):"
-   "        return (\"Cons(%r, %r)\" % (self.first, self.rest))"
+   "        return \"Cons({!r}, {!r})\".format(self.first, self.rest)"
    "    "
    "    def __eq__(self, other):"
    "        return ((type(other) == Cons) and (self.first == other.first) and (self.rest == other.rest))"
-   "    "
-   "    def __ne__(self, other):"
-   "        return (not (other == self))"))
+   ))
 
 
 (check-equal? (comment->block "abcd") '("# abcd"))
