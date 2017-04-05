@@ -80,8 +80,12 @@
     [(list 'import (? symbol? module))
      (list (string-append "import " (symbol->string module)))]
     [(cons 'import _) (err)]
-    [(list 'class (? symbol? classname) (list (? symbol? fields) ...))
-     (classdef classname (cast fields (Listof Symbol)))]
+    [(list 'class (? symbol? classname) (list (and
+                                               fields
+                                               (or (? symbol?)
+                                                  (list (? symbol?)
+                                                        (? string?)))) ...))
+     (classdef classname (cast fields (Listof (U Symbol (List Symbol String)))))]
     [(cons 'class _) (err)]
     [_ (py-flatten-stmt exp)]))
 
@@ -95,6 +99,11 @@
     (raise-argument-error 'py-flatten-stmt
                           "legal stmt" 0 stmt))
   (match stmt
+    [(list 'postcomment stmt (? string? str))
+     (define stmt-block (py-flatten-stmt stmt))
+     (cons (string-append (first stmt-block) " # " str)
+           (rest stmt-block))]
+    [(cons 'postcomment _) (err)]
     ;; allows escaping back into list of strings:
     [(cons '%block (? block? b)) b]
     [(cons '%block _) (err)]
@@ -405,25 +414,43 @@
   (apply append (add-between blocks '(""))))
 
 
+
+(define-type Fieldspec (U Symbol (List Symbol String)))
+
 ;; given a classname and a list of fields, return
 ;; a block representing a python class definition
 (define (classdef [classname : Symbol]
-                  [fields : (Listof Symbol)]) : Block
+                  [fields : (Listof (U Symbol (List Symbol String)))]) : Block
+  (define names (map fieldspec-name fields))
   (block-indent
    (cons
     (~a "class "classname":")
     (flattenblocks
      (list
       (init fields)
-      (reprdef classname fields)
-      (eqdef classname fields))))))
+      (reprdef classname names)
+      (eqdef classname names))))))
+
 
 ;; given a list of fields, return a block representing
 ;; a standard __init__ function
-(define (init [fields : (Listof Symbol)]) : Block
-  (py-def `(__init__ self ,@fields)
-          (for/list ([a (in-list fields)])
-            `(= (%o self ,a) ,a))))
+(define (init [fields : (Listof Fieldspec)]) : Block
+  (define fieldnames (map fieldspec-name fields))
+  (py-def `(__init__ self ,@fieldnames)
+          (map init-line fields)))
+
+;; map a fieldspec to its name
+(define (fieldspec-name [f : Fieldspec]) : Symbol
+  (match f
+    [(? symbol? s) s]
+    [(list (? symbol? s) _) s]))
+
+(define (init-line [field : Fieldspec]) : Sexp
+  (match field
+    [(? symbol?)
+     `(= (%o self ,field) ,field)]
+    [(list s desc)
+     `(postcomment (= (%o self ,s) ,s) ,desc)]))
 
 ;; given a list of fields, return a block representing
 ;; a standard __repr__ function
@@ -436,11 +463,9 @@
     (for/list ([i (in-range (length fields))]) '(%noquote "{!r}")))
   (py-def '(__repr__ self)
           (list
-           `(%o ,(py-flatten (cons classname formatstrs))
-                (format ,@thisfields))
            ;; note freaky use of py-flatten result as string!
-           #;`(% ,(py-flatten (cons classname formatstrs))
-               (%tup ,@thisfields)))))
+           `(%o ,(py-flatten (cons classname formatstrs))
+                (format ,@thisfields)))))
 
 
 
@@ -453,16 +478,7 @@
              (== (type other) ,classname)
              ,@(for/list : (Listof Sexp) ([a (in-list fields)])
                  (ann `(== (%o self ,a) (%o other ,a))
-                      Sexp))))
-          #;(list
-           (cons '%block
-                 (append
-                  (list
-                   (~a "return (" (py-flatten
-                                   `(== (type other) ,classname))))
-                  (for/list : Block ([a (in-list fields)])
-                    (~a "  and (self."a" == other."a")"))
-                  (list ")"))))))
+                      Sexp))))))
 
 (define (neqdef) : Block
   (py-def '(__ne__ self other)
@@ -499,6 +515,9 @@
     (raise-argument-error 'add-return-stmt
                           "legal stmt" 0 stmt))
   (match stmt
+    [(list 'postcomment stmt str)
+     (list 'postcomment (add-return-stmt stmt) str)]
+    [(cons 'postcomment _) (give-up)]
     [(cons '%block _) (give-up)]
     [(list '%begin stmts ...)
      (cons '%begin (add-return stmts))]
@@ -661,20 +680,7 @@
                                   (print x)))
               (list "while (x < 3):" "    print(x)"))
 
-;; regression:
-(check-equal?
- (py-flatten-toplevel '(class Cons (first rest)))
- '("class Cons:"
-   "    def __init__(self, first, rest):"
-   "        self.first = first"
-   "        self.rest = rest"
-   "    "
-   "    def __repr__(self):"
-   "        return \"Cons({!r}, {!r})\".format(self.first, self.rest)"
-   "    "
-   "    def __eq__(self, other):"
-   "        return ((type(other) == Cons) and (self.first == other.first) and (self.rest == other.rest))"
-   ))
+
 
 
 (check-equal? (comment->block "abcd") '("# abcd"))
@@ -719,3 +725,30 @@
 
 (check-equal? (add-return-stmt '(return 19)) '(return 19))
 (check-equal? (add-return-stmt '(raise 23847)) '(raise 23847))
+
+(check-equal? (py-flatten-stmt '(postcomment (= a 3) "(not really)"))
+              '("a = 3 # (not really)"))
+
+;; regression:
+(check-equal? (add-return '((= a 3) (postcomment (= a 4) "oops")))
+              '((= a 3) (postcomment (= a 4) "oops")))
+
+(check-equal? (map init-line (ann (list 'first '(rest "so awesome"))
+                                  (Listof Fieldspec)))
+              '((= (%o self first) first)
+                (postcomment (= (%o self rest) rest)
+                             "so awesome")))
+
+(check-equal?
+ (py-flatten-toplevel '(class Cons (first (rest "so awesome"))))
+ '("class Cons:"
+   "    def __init__(self, first, rest):"
+   "        self.first = first"
+   "        self.rest = rest # so awesome"
+   "    "
+   "    def __repr__(self):"
+   "        return \"Cons({!r}, {!r})\".format(self.first, self.rest)"
+   "    "
+   "    def __eq__(self, other):"
+   "        return ((type(other) == Cons) and (self.first == other.first) and (self.rest == other.rest))"
+   ))
