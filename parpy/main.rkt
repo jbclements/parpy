@@ -1,11 +1,28 @@
 #lang typed/racket
 
 ;; too early to decide what should be exported
-(provide (all-defined-out))
+#;(provide (all-defined-out))
+(provide py-file)
 
 ;; represents a list of python lines
 (define-type Block (Listof String))
 (define-predicate block? Block)
+
+;; given a filename and zero or more top-level forms,
+;; generate a python file
+(: py-file (Path-String (Listof Sexp) -> Void))
+(define (py-file tgt exprs)
+  (displaytofile
+   tgt
+   (flattenblocks
+    (map py-flatten-toplevel exprs))))
+
+;; given a path-string and a block, write it to the file
+(define (displaytofile [f : Path-String] [block : Block]) : Void
+  (call-with-output-file f
+    (λ ([port : Output-Port])
+      (for-each (λ (l) (displayln l port)) block))
+    #:exists 'truncate))
 
 ;; given a name and a list of blocks, return a block
 ;; representing the test class
@@ -58,7 +75,7 @@
     (raise-argument-error 'py-flatten-toplevel
                           "legal top-level stmt" 0 exp))
   (match exp
-    [(list '%testclass (? symbol? classname) (list (? symbol?
+    [(list 'testclass (? symbol? classname) (list (? symbol?
                                                       testnames)
                                                    lolotest ...)
            ...)
@@ -66,7 +83,7 @@
                                (cast testnames (Listof Symbol))
                                (cast lolotest
                                      (Listof (Listof Sexp)))))]
-    [(cons '%testclass _) (err)]
+    [(cons 'testclass _) (err)]
     [(list '%% (? string? comment) body)
      (append (comment->block comment)
            (py-flatten-toplevel body))]
@@ -139,16 +156,16 @@
                (bracket-wrap (py-flatten idx-exp))
                " = " (py-flatten new-val)))]
     [(cons '%aset! _) (err)]
-    [(list '%define (list (? symbol? name) (? symbol? args) ...)
+    [(list 'define (list (? symbol? name) (? symbol? args) ...)
            (? string? docstr)
            bodies ...)
      (py-def (cons name (cast args (Listof Symbol)))
              #:docstring docstr
              bodies)]
-    [(list '%define (list (? symbol? name) (? symbol? args) ...)
+    [(list 'define (list (? symbol? name) (? symbol? args) ...)
            bodies ...)
      (py-def (cons name (cast args (Listof Symbol))) bodies)]
-    [(cons '%define _) (err)]
+    [(cons 'define _) (err)]
     [(list '%% (? string? comment) body)
      (append (comment->block comment)
              (py-flatten-stmt body))]
@@ -176,13 +193,13 @@
                   'None
                   result))]
     [(cons '%check-selfmut _) (err)]
-    [(list '%check-eq? a b)
+    [(list 'check-eq? a b)
      (py-flatten-stmt (list '|self.assertEqual| a b))]
-    [(cons '%check-eq? _) (err)]
+    [(cons 'check-eq? _) (err)]
     [(list '%check-raises? exn fun args ...)
      (py-flatten-stmt
       (append (list '|self.assertRaises| exn fun) args))]
-    [(list '%cond clauses ...)
+    [(list 'cond clauses ...)
      (py-flatten-stmt
       (unfold-cond clauses))]
     ;; must be an expression used as a stmt:
@@ -354,8 +371,8 @@
                     [expected : Sexp]) : Sexp
   `(%begin
     (= ,name ,initval)
-    (%check-eq? ,call ,callresult)
-    (%check-eq? ,name ,expected)))
+    (check-eq? ,call ,callresult)
+    (check-eq? ,name ,expected)))
 
 ;; append with spaces between
 (: space-append (String * -> String))
@@ -531,11 +548,11 @@
     [(cons 'if _) (err)]
     [(cons '= _) stmt]
     [(list '%aset! array-exp idx-exp new-val) stmt]
-    [(list '%define (list (? symbol? name) (? symbol? args) ...)
+    [(list 'define (list (? symbol? name) (? symbol? args) ...)
            (? string? docstr)
            bodies ...)
      stmt]
-    [(list '%define (list (? symbol? name) (? symbol? args) ...)
+    [(list 'define (list (? symbol? name) (? symbol? args) ...)
            bodies ...)
      stmt]
     [(cons '%% _) stmt]
@@ -543,23 +560,19 @@
     [(cons 'raise _) stmt]
     [(cons '%check-mut _) stmt]
     [(cons '%check-selfmut _) stmt]
-    [(cons '%check-eq? _) stmt]
+    [(cons 'check-eq? _) stmt]
     [(cons '%check-raises? _) stmt]
-    [(list '%cond (list clause-elts ...) ...)
+    [(list 'cond (list clause-elts ...) ...)
      ;; NB treating clauses as lists of statements okay only because
      ;; add-return ignores all but last element of list:
-     (cons '%cond (map add-return (cast clause-elts
+     (cons 'cond (map add-return (cast clause-elts
                                         (Listof (Listof Sexp)))))]
-    [(cons '%cond _) (err)]
+    [(cons 'cond _) (err)]
     ;; must be an expression used as a stmt:
     [other (list 'return stmt)]))
 
-;; given a path-string and a block, write it to the file
-(define (displaytofile [f : Path-String] [block : Block]) : Void
-  (call-with-output-file f
-    (λ ([port : Output-Port])
-      (for-each (λ (l) (displayln l port)) block))
-    #:exists 'truncate))
+
+;; TESTS:
 
 
 (check-not-exn (λ () (assert-mut 'zz 342 '(f zz) "boo" 343)))
@@ -574,7 +587,7 @@
 (check-equal?
  (py-flatten-stmt
   '(%% "swap two elements in an array"
-       (%define (swap_elts obj idx1 idx2)
+       (define (swap_elts obj idx1 idx2)
          (= temp (%sub obj idx1))
          (%aset! obj idx1 (%sub obj idx2))
          (%aset! obj idx2 temp))))
@@ -620,7 +633,7 @@
 
 (check-equal?
  (py-flatten-stmt
-  '(%cond [(< zig zay) 123]
+  '(cond [(< zig zay) 123]
           [tuvalu "bongo boy"]
           [else (+ 3 4)]))
  (py-flatten-stmt
@@ -643,12 +656,12 @@
 ;; essentially a regression test:
 (check-equal?
  (py-flatten-toplevel
-  '(%testclass
+  '(testclass
     Lab2Tests
     [SelectionSort
-     (%check-eq? (selection_sort (%arr 9 8 18 7 8))
+     (check-eq? (selection_sort (%arr 9 8 18 7 8))
                (%arr 7 8 8 9 18))
-     (%check-eq? (move_smallest_to_posn (%arr 9 8 18 7 8) 2)
+     (check-eq? (move_smallest_to_posn (%arr 9 8 18 7 8) 2)
                (%arr 9 8 7 18 8))]
     [InsertionSort
      (%check-selfmut o (insert (%arr 3 9 12 11 4 9) 3 11)
@@ -659,9 +672,9 @@
   'Lab2Tests
   (list
    (t 'SelectionSort
-      '(%check-eq? (selection_sort (%arr 9 8 18 7 8))
+      '(check-eq? (selection_sort (%arr 9 8 18 7 8))
                 (%arr 7 8 8 9 18))
-      '(%check-eq? (move_smallest_to_posn (%arr 9 8 18 7 8) 2)
+      '(check-eq? (move_smallest_to_posn (%arr 9 8 18 7 8) 2)
                 (%arr 9 8 7 18 8)))
    (t 'InsertionSort
       '(%check-selfmut o (insert (%arr 3 9 12 11 4 9) 3 11)
@@ -706,12 +719,12 @@
               '(if (< x 3) ((return (+ 4 5))) ((return None))))
 (check-equal? (add-return-stmt '(%begin 3 4 5))
               '(%begin 3 4 (return 5)))
-(check-equal? (add-return-stmt '(%cond [(< pre_elt elt)
+(check-equal? (add-return-stmt '(cond [(< pre_elt elt)
                                         (%aset! arr idx elt)
                                         None]
                                        [else
                                         (%aset! arr idx pre_elt)]))
-              '(%cond [(< pre_elt elt)
+              '(cond [(< pre_elt elt)
                        (%aset! arr idx elt)
                        (return None)]
                       [else
@@ -752,3 +765,9 @@
    "    def __eq__(self, other):"
    "        return ((type(other) == Cons) and (self.first == other.first) and (self.rest == other.rest))"
    ))
+
+(check-equal?
+ (py-flatten-toplevel '(%% "abc\ndef" (+ 3 4)))
+ '("# abc"
+   "# def"
+   "(3 + 4)"))
