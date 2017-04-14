@@ -54,7 +54,7 @@
 ;; a class extending TestCase:
 (: t1 (String Sexp * -> Block))
 (define (t1 name . exps)
-  (py-def (list (string->symbol (~a "test" name)) 'self)
+  (py-def (list (string->symbol (~a "test_" name)) 'self)
           exps))
 
 ;; given a nonempty block, indent all strings after the first by 4
@@ -96,6 +96,21 @@
     [(cons '%begin _) (err)]
     [(list 'import (? symbol? module))
      (list (string-append "import " (symbol->string module)))]
+    [(list 'import (? symbol? module)
+           (and ids
+                (list (or (? symbol?) (list (? symbol?) (? symbol?)))
+                      ...)))
+     (list (string-append
+            "from "(symbol->string module)
+            " import "(apply
+                       string-append
+                       (add-between (map import-flatten
+                                         (cast ids
+                                               (Listof (U Symbol
+                                                          (List
+                                                           Symbol
+                                                           Symbol)))))
+                                    ", "))))]
     [(cons 'import _) (err)]
     [(list 'class (? symbol? classname) (list (and
                                                fields
@@ -105,6 +120,13 @@
      (classdef classname (cast fields (Listof (U Symbol (List Symbol String)))))]
     [(cons 'class _) (err)]
     [_ (py-flatten-stmt exp)]))
+
+;; given an import clause, flatten it into a string
+(define (import-flatten [import : (U Symbol (List Symbol Symbol))])
+  (match import
+    [(? symbol? s) (symbol->string s)]
+    [(list (? symbol? oldname) (? symbol? newname))
+     (~a oldname" as "newname)]))
 
 ;; flatten a list of stmt
 (define (py-flatten-stmts [stmts : (Listof Sexp)]) : Block
@@ -196,6 +218,22 @@
     [(list 'check-eq? a b)
      (py-flatten-stmt (list '|self.assertEqual| a b))]
     [(cons 'check-eq? _) (err)]
+    [(list 'check-eq-nomut? (list f args ...) b)
+     (define temps : (Listof Symbol)
+       (for/list ([var-idx (in-range (length args))])
+         (string->symbol (~a "temp_"var-idx))))
+     (py-flatten-stmts
+      (append
+       (for/list : (Listof Sexp)
+         ([temp (in-list temps)]
+          [val (in-list args)])
+         `(= ,temp ,val))
+       (list `(|self.assertEqual| (,f . ,temps) ,b))
+       (for/list : (Listof Sexp)
+         ([temp (in-list temps)]
+          [val (in-list args)])
+         `(|self.assertEqual| ,temp ,val))))]
+    [(cons 'check-eq-nomut? _) (err)]
     [(list '%check-raises? exn fun args ...)
      (py-flatten-stmt
       (append (list '|self.assertRaises| exn fun) args))]
@@ -210,7 +248,7 @@
   (match s
     [(? symbol? sym) (legal-id? sym)]
     [(list '%tup (? lvalue? subvals) ...) #t]
-    [(list '%o _ (? symbol? sym)) (legal-id? sym)]
+    [(list 'o _ (? symbol? sym)) (legal-id? sym)]
     [(list '%sub _ _) #t]
     [else #f]))
 
@@ -261,9 +299,9 @@
       (py-flatten arr)
       (bracket-wrap (py-flatten idx)))]
     [(cons '%sub _) (err)]
-    [(list '%o obj other)
+    [(list 'o obj other)
      (string-append (py-flatten obj) "." (py-flatten other))]
-    [(cons '%o _) (err)]
+    [(cons 'o _) (err)]
     [(list '%noquote (? string? s)) s]
     [(cons '%arr (? list? args))
      (pylist (map py-flatten args))]
@@ -280,6 +318,9 @@
      (define funname (pyfunname fn))
      (id-check funname)
      (~a (dots-convert (symbol->string funname))
+         (arglist (py-flatten-args args)))]
+    [(list (and method (list 'o _ ...)) args ...)
+     (~a (py-flatten method)
          (arglist (py-flatten-args args)))]
     [(? list? l) (err)]
     [(? string? s) (string-encode s)]
@@ -355,7 +396,7 @@
 
 (check-equal? (lvalue? 'abc) #t)
 (check-equal? (lvalue? 'abc>def) #t)
-(check-equal? (lvalue? '(%tup (%sub (f x) g) (%o 3 zz))) #t)
+(check-equal? (lvalue? '(%tup (%sub (f x) g) (o 3 zz))) #t)
 (check-equal? (lvalue? '(%tup (%sub (f x) g) (f x))) #f)
 
 (check-equal? (dots-convert "bb>ac>d")
@@ -465,9 +506,9 @@
 (define (init-line [field : Fieldspec]) : Sexp
   (match field
     [(? symbol?)
-     `(= (%o self ,field) ,field)]
+     `(= (o self ,field) ,field)]
     [(list s desc)
-     `(postcomment (= (%o self ,s) ,s) ,desc)]))
+     `(postcomment (= (o self ,s) ,s) ,desc)]))
 
 ;; given a list of fields, return a block representing
 ;; a standard __repr__ function
@@ -481,7 +522,7 @@
   (py-def '(__repr__ self)
           (list
            ;; note freaky use of py-flatten result as string!
-           `(%o ,(py-flatten (cons classname formatstrs))
+           `(o ,(py-flatten (cons classname formatstrs))
                 (format ,@thisfields)))))
 
 
@@ -494,7 +535,7 @@
           `((and
              (== (type other) ,classname)
              ,@(for/list : (Listof Sexp) ([a (in-list fields)])
-                 (ann `(== (%o self ,a) (%o other ,a))
+                 (ann `(== (o self ,a) (o other ,a))
                       Sexp))))))
 
 (define (neqdef) : Block
@@ -561,6 +602,7 @@
     [(cons '%check-mut _) stmt]
     [(cons '%check-selfmut _) stmt]
     [(cons 'check-eq? _) stmt]
+    [(cons 'check-eq-nomut? _) stmt]
     [(cons '%check-raises? _) stmt]
     [(list 'cond (list clause-elts ...) ...)
      ;; NB treating clauses as lists of statements okay only because
@@ -684,8 +726,8 @@
 
 (check-equal? (py-flatten '(or 3 4)) "(3 or 4)")
 
-(check-equal? (py-flatten '(%o def ghi)) "def.ghi")
-(check-equal? (py-flatten '(%o def (ghi jkl))) "def.ghi(jkl)")
+(check-equal? (py-flatten '(o def ghi)) "def.ghi")
+(check-equal? (py-flatten '(o def (ghi jkl))) "def.ghi(jkl)")
 (check-equal? (py-flatten "abc\r\n\t\\\"def")
               "\"abc\r\\n\t\\\\\"def\"")
 
@@ -748,8 +790,8 @@
 
 (check-equal? (map init-line (ann (list 'first '(rest "so awesome"))
                                   (Listof Fieldspec)))
-              '((= (%o self first) first)
-                (postcomment (= (%o self rest) rest)
+              '((= (o self first) first)
+                (postcomment (= (o self rest) rest)
                              "so awesome")))
 
 (check-equal?
@@ -771,3 +813,24 @@
  '("# abc"
    "# def"
    "(3 + 4)"))
+
+(check-equal? (py-flatten-stmt `(check-eq-nomut? (f 3 4 (Pair 3 "mt")) 167))
+              (py-flatten-stmts
+               '((= temp_0 3)
+                 (= temp_1 4)
+                 (= temp_2 (Pair 3 "mt"))
+                 (|self.assertEqual| (f temp_0 temp_1 temp_2) 167)
+                 (|self.assertEqual| temp_0 3)
+                 (|self.assertEqual| temp_1 4)
+                 (|self.assertEqual| temp_2 (Pair 3 "mt")))))
+
+(check-equal? (py-flatten-toplevel `(import z (a b n)))
+              (list "from z import a, b, n"))
+
+(check-equal? (py-flatten-toplevel `(import z (a [b the_b] n)))
+              (list "from z import a, b as the_b, n"))
+
+(check-equal?
+ (py-flatten '((o (Pair 9 "mt") __eq__)
+               (Pair 9 "mt")))
+ "Pair(9, \"mt\").__eq__(Pair(9, \"mt\"))")
