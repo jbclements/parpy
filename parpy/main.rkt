@@ -91,9 +91,9 @@
      (comment->block comment)]
     [(cons '%% _) (err)]
     ;; flatten a sequence of top-level-stmts
-    [(list '%begin stmts ...)
+    [(list 'begin stmts ...)
      (apply append (map py-flatten-toplevel stmts))]
-    [(cons '%begin _) (err)]
+    [(cons 'begin _) (err)]
     [(list 'import (? symbol? module))
      (list (string-append "import " (symbol->string module)))]
     [(list 'import (? symbol? module)
@@ -147,8 +147,8 @@
     [(cons '%block (? block? b)) b]
     [(cons '%block _) (err)]
     ;; flatten a sequence of stmts:
-    [(list '%begin stmts ...) (py-flatten-stmts stmts)]
-    [(cons '%begin _) (err)]
+    [(list 'begin stmts ...) (py-flatten-stmts stmts)]
+    [(cons 'begin _) (err)]
     [(list 'for (? symbol? loopvar) range bodys ...)
      (block-indent
       (cons (~a "for "loopvar" in "(py-flatten range)":")
@@ -234,7 +234,7 @@
           [val (in-list args)])
          `(|self.assertEqual| ,temp ,val))))]
     [(cons 'check-eq-nomut? _) (err)]
-    [(list '%check-raises? exn fun args ...)
+    [(list 'check-raises? exn fun args ...)
      (py-flatten-stmt
       (append (list '|self.assertRaises| exn fun) args))]
     [(list 'cond clauses ...)
@@ -247,7 +247,7 @@
 (define (lvalue? [s : Sexp]) : Boolean
   (match s
     [(? symbol? sym) (legal-id? sym)]
-    [(list '%tup (? lvalue? subvals) ...) #t]
+    [(list 'tup (? lvalue? subvals) ...) #t]
     [(list 'o _ (? symbol? sym)) (legal-id? sym)]
     [(list '%sub _ _) #t]
     [else #f]))
@@ -305,8 +305,11 @@
     [(list '%noquote (? string? s)) s]
     [(cons '%arr (? list? args))
      (pylist (map py-flatten args))]
-    [(cons '%tup (? list? args))
-     (arglist (map py-flatten args))]
+    [(cons 'tup (? list? args))
+     (cond [(= (length args) 1)
+            (string-append "(" (py-flatten (first args)) ",)")]
+           [else
+            (arglist (map py-flatten args))])]
     [(list 'λ (list (? symbol? args) ...) body)
      (paren-wrap
       (string-append "lambda " (commasep
@@ -396,8 +399,8 @@
 
 (check-equal? (lvalue? 'abc) #t)
 (check-equal? (lvalue? 'abc>def) #t)
-(check-equal? (lvalue? '(%tup (%sub (f x) g) (o 3 zz))) #t)
-(check-equal? (lvalue? '(%tup (%sub (f x) g) (f x))) #f)
+(check-equal? (lvalue? '(tup (%sub (f x) g) (o 3 zz))) #t)
+(check-equal? (lvalue? '(tup (%sub (f x) g) (f x))) #f)
 
 (check-equal? (dots-convert "bb>ac>d")
               "bb.ac.d")
@@ -410,7 +413,7 @@
 (define (assert-mut [name : Symbol] [initval : Sexp]
                     [call : Sexp] [callresult : Sexp]
                     [expected : Sexp]) : Sexp
-  `(%begin
+  `(begin
     (= ,name ,initval)
     (check-eq? ,call ,callresult)
     (check-eq? ,name ,expected)))
@@ -577,9 +580,9 @@
      (list 'postcomment (add-return-stmt stmt) str)]
     [(cons 'postcomment _) (give-up)]
     [(cons '%block _) (give-up)]
-    [(list '%begin stmts ...)
-     (cons '%begin (add-return stmts))]
-    [(cons '%begin _) (err)]
+    [(list 'begin stmts ...)
+     (cons 'begin (add-return stmts))]
+    [(cons 'begin _) (err)]
     [(cons 'for _) stmt]
     [(cons 'while _) stmt]
     [(list 'if test (list thens ...))
@@ -603,7 +606,7 @@
     [(cons '%check-selfmut _) stmt]
     [(cons 'check-eq? _) stmt]
     [(cons 'check-eq-nomut? _) stmt]
-    [(cons '%check-raises? _) stmt]
+    [(cons 'check-raises? _) stmt]
     [(list 'cond (list clause-elts ...) ...)
      ;; NB treating clauses as lists of statements okay only because
      ;; add-return ignores all but last element of list:
@@ -618,8 +621,6 @@
 
 
 (check-not-exn (λ () (assert-mut 'zz 342 '(f zz) "boo" 343)))
-
-(check-equal? (py-flatten '(%tup 3 "bc")) "(3, \"bc\")")
 
 (check-equal?
  (reprdef 'zig '(zag zazz))
@@ -692,7 +693,7 @@
 
 (check-equal?
  (py-flatten-stmt
-  '(%check-raises? IndexError f 34 78 1))
+  '(check-raises? IndexError f 34 78 1))
  '("self.assertRaises(IndexError, f, 34, 78, 1)"))
 
 ;; essentially a regression test:
@@ -759,8 +760,8 @@
               '(return (f 3 3)))
 (check-equal? (add-return-stmt '(if (< x 3) ((+ 4 5))))
               '(if (< x 3) ((return (+ 4 5))) ((return None))))
-(check-equal? (add-return-stmt '(%begin 3 4 5))
-              '(%begin 3 4 (return 5)))
+(check-equal? (add-return-stmt '(begin 3 4 5))
+              '(begin 3 4 (return 5)))
 (check-equal? (add-return-stmt '(cond [(< pre_elt elt)
                                         (%aset! arr idx elt)
                                         None]
@@ -834,3 +835,14 @@
  (py-flatten '((o (Pair 9 "mt") __eq__)
                (Pair 9 "mt")))
  "Pair(9, \"mt\").__eq__(Pair(9, \"mt\"))")
+
+(check-equal? (py-flatten '(tup 3 "bc")) "(3, \"bc\")")
+(check-equal?
+ (py-flatten `(tup 34 "apple" "banana"))
+ "(34, \"apple\", \"banana\")")
+(check-equal?
+ (py-flatten `(tup))
+ "()")
+(check-equal?
+ (py-flatten `(tup 34))
+ "(34,)")
