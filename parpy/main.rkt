@@ -149,7 +149,13 @@
     ;; flatten a sequence of stmts:
     [(list 'begin stmts ...) (py-flatten-stmts stmts)]
     [(cons 'begin _) (err)]
-    [(list 'for (? symbol? loopvar) range bodys ...)
+    ;; "with"
+    [(list 'with [list (? symbol? name) expr] bodys ...)
+     (block-indent
+      (cons (~a "with "(py-flatten expr)" as "name":")
+            (py-flatten-stmts bodys)))]
+    [(cons 'with _) (err)]
+    [(list 'for [list (? symbol? loopvar) range] bodys ...)
      (block-indent
       (cons (~a "for "loopvar" in "(py-flatten range)":")
             (py-flatten-stmts bodys)))]
@@ -584,6 +590,9 @@
      (cons 'begin (add-return stmts))]
     [(cons 'begin _) (err)]
     [(cons 'for _) stmt]
+    [(list 'with stmts ...)
+     (cons 'with (add-return stmts))]
+    [(cons 'with _) (err)]
     [(cons 'while _) stmt]
     [(list 'if test (list thens ...))
      (add-return-stmt `(if ,test ,thens (None)))]
@@ -846,3 +855,11 @@
 (check-equal?
  (py-flatten `(tup 34))
  "(34,)")
+
+(check-equal?
+ (py-flatten-stmt '(with [input (open "zagbar" "r")]
+                         (for [line infile]
+                           (= accum (+ accum line)))))
+ '("with open(\"zagbar\", \"r\") as input:"
+   "    for line in infile:"
+   "        accum = (accum + line)"))
