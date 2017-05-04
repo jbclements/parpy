@@ -249,7 +249,7 @@
     [(? symbol? sym) (legal-id? sym)]
     [(list 'tup (? lvalue? subvals) ...) #t]
     [(list 'o _ (? symbol? sym)) (legal-id? sym)]
-    [(list '%sub _ _) #t]
+    [(list 'sub _ _) #t]
     [else #f]))
 
 ;; given a string, return a block representing a comment
@@ -294,16 +294,16 @@
      (infixop (symbol->string op) args)]
     [(list 'not a)
      (paren-wrap (space-append "not" (py-flatten a)))]
-    [(list '%sub arr idx)
+    [(list 'sub arr idx)
      (string-append
       (py-flatten arr)
       (bracket-wrap (py-flatten idx)))]
-    [(cons '%sub _) (err)]
+    [(cons 'sub _) (err)]
     [(list 'o obj other)
      (string-append (py-flatten obj) "." (py-flatten other))]
     [(cons 'o _) (err)]
     [(list '%noquote (? string? s)) s]
-    [(cons '%arr (? list? args))
+    [(cons 'arr (? list? args))
      (pylist (map py-flatten args))]
     [(cons 'tup (? list? args))
      (cond [(= (length args) 1)
@@ -399,8 +399,8 @@
 
 (check-equal? (lvalue? 'abc) #t)
 (check-equal? (lvalue? 'abc>def) #t)
-(check-equal? (lvalue? '(tup (%sub (f x) g) (o 3 zz))) #t)
-(check-equal? (lvalue? '(tup (%sub (f x) g) (f x))) #f)
+(check-equal? (lvalue? '(tup (sub (f x) g) (o 3 zz))) #t)
+(check-equal? (lvalue? '(tup (sub (f x) g) (f x))) #f)
 
 (check-equal? (dots-convert "bb>ac>d")
               "bb.ac.d")
@@ -631,30 +631,30 @@
  (py-flatten-stmt
   '(%% "swap two elements in an array"
        (define (swap_elts obj idx1 idx2)
-         (= temp (%sub obj idx1))
-         (%aset! obj idx1 (%sub obj idx2))
+         (= temp (sub obj idx1))
+         (%aset! obj idx1 (sub obj idx2))
          (%aset! obj idx2 temp))))
  (cons "# swap two elements in an array"
        (py-def '(swap_elts obj idx1 idx2)
-               '((= temp (%sub obj idx1))
-                 (%aset! obj idx1 (%sub obj idx2))
+               '((= temp (sub obj idx1))
+                 (%aset! obj idx1 (sub obj idx2))
                  (%aset! obj idx2 temp)))))
 
 (check-equal?
  (py-flatten-stmt
-  '(%check-selfmut o (insert_h (%arr 3 9 12 11 4 9) 3 11)
-                   (%arr 3 9 11 12 4 9)))
+  '(%check-selfmut o (insert_h (arr 3 9 12 11 4 9) 3 11)
+                   (arr 3 9 11 12 4 9)))
  (py-flatten-stmt
-  (assert-mut 'o '(%arr 3 9 12 11 4 9)
+  (assert-mut 'o '(arr 3 9 12 11 4 9)
               '(insert_h o 3 11)  'None
-              '(%arr 3 9 11 12 4 9))))
+              '(arr 3 9 11 12 4 9))))
 
 ;; regression test:
 (check-equal?
  (py-flatten-stmt
-  (assert-mut 'o '(%arr 3 9 12 11 4 9)
+  (assert-mut 'o '(arr 3 9 12 11 4 9)
               '(insert_h o 3 11)  'None
-              '(%arr 3 9 11 12 4 9)))
+              '(arr 3 9 11 12 4 9)))
  (py-flatten-stmt
   '(%block
     "o = [3, 9, 12, 11, 4, 9]"
@@ -702,28 +702,28 @@
   '(testclass
     Lab2Tests
     [SelectionSort
-     (check-eq? (selection_sort (%arr 9 8 18 7 8))
-               (%arr 7 8 8 9 18))
-     (check-eq? (move_smallest_to_posn (%arr 9 8 18 7 8) 2)
-               (%arr 9 8 7 18 8))]
+     (check-eq? (selection_sort (arr 9 8 18 7 8))
+               (arr 7 8 8 9 18))
+     (check-eq? (move_smallest_to_posn (arr 9 8 18 7 8) 2)
+               (arr 9 8 7 18 8))]
     [InsertionSort
-     (%check-selfmut o (insert (%arr 3 9 12 11 4 9) 3 11)
-                     (%arr 3 9 11 12 4 9))
-     (%check-selfmut o (insert (%arr 3 9 12 12 4 9) 2 11)
-                     (%arr 3 9 11 12 4 9))]))
+     (%check-selfmut o (insert (arr 3 9 12 11 4 9) 3 11)
+                     (arr 3 9 11 12 4 9))
+     (%check-selfmut o (insert (arr 3 9 12 12 4 9) 2 11)
+                     (arr 3 9 11 12 4 9))]))
  (testclass
   'Lab2Tests
   (list
    (t 'SelectionSort
-      '(check-eq? (selection_sort (%arr 9 8 18 7 8))
-                (%arr 7 8 8 9 18))
-      '(check-eq? (move_smallest_to_posn (%arr 9 8 18 7 8) 2)
-                (%arr 9 8 7 18 8)))
+      '(check-eq? (selection_sort (arr 9 8 18 7 8))
+                (arr 7 8 8 9 18))
+      '(check-eq? (move_smallest_to_posn (arr 9 8 18 7 8) 2)
+                (arr 9 8 7 18 8)))
    (t 'InsertionSort
-      '(%check-selfmut o (insert (%arr 3 9 12 11 4 9) 3 11)
-                       (%arr 3 9 11 12 4 9))
-      '(%check-selfmut o (insert (%arr 3 9 12 12 4 9) 2 11)
-                       (%arr 3 9 11 12 4 9))))))
+      '(%check-selfmut o (insert (arr 3 9 12 11 4 9) 3 11)
+                       (arr 3 9 11 12 4 9))
+      '(%check-selfmut o (insert (arr 3 9 12 12 4 9) 2 11)
+                       (arr 3 9 11 12 4 9))))))
 
 (check-equal? (py-flatten '(or 3 4)) "(3 or 4)")
 
