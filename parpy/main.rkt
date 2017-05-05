@@ -1,8 +1,9 @@
 #lang typed/racket
 
-;; too early to decide what should be exported
-#;(provide (all-defined-out))
-(provide py-file)
+(provide py-file
+         (all-from-out "run-prog.rkt"))
+
+(require "run-prog.rkt")
 
 ;; represents a list of python lines
 (define-type Block (Listof String))
