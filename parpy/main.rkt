@@ -192,8 +192,9 @@
              #:docstring docstr
              bodies)]
     [(list 'define (list (? symbol? name) (? symbol? args) ...)
-           bodies ...)
-     (py-def (cons name (cast args (Listof Symbol))) bodies)]
+           bodies ..1)
+     (py-def (cons name (cast args (Listof Symbol)))
+             (cast bodies (Listof Sexp)))]
     [(cons 'define _) (err)]
     [(list '%% (? string? comment) body)
      (append (comment->block comment)
@@ -877,3 +878,6 @@
    "        accum = (accum + line)"))
 
 (check-equal? (py-flatten '(slice zz 3 -2 #f)) "zz[3:-2:]")
+
+(check-exn #px"expected: legal stmt"
+           (λ () (py-flatten-toplevel '(define (a)))))
