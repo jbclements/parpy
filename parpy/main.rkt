@@ -306,6 +306,17 @@
       (py-flatten arr)
       (bracket-wrap (py-flatten idx)))]
     [(cons 'sub _) (err)]
+    [(list 'slice arr start stop step)
+     ;; we use #f to indicate empty slots in the
+     ;; slice syntax. This wouldn't ordinarily be okay--#f is a legal
+     ;; expression--but I believe it will never make sense to put
+     ;; False in a slice
+     (string-append (py-flatten arr)
+                    (format "[~a:~a:~a]"
+                            (if start (py-flatten start) "")
+                            (if stop (py-flatten stop) "")
+                            (if step (py-flatten step) "")))]
+    [(cons 'slice _) (err)]
     [(list 'o obj other)
      (string-append (py-flatten obj) "." (py-flatten other))]
     [(cons 'o _) (err)]
@@ -864,3 +875,5 @@
  '("with open(\"zagbar\", \"r\") as input:"
    "    for line in infile:"
    "        accum = (accum + line)"))
+
+(check-equal? (py-flatten '(slice zz 3 -2 #f)) "zz[3:-2:]")
