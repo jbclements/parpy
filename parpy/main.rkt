@@ -119,6 +119,8 @@
                                                   (list (? symbol?)
                                                         (? string?)))) ...))
      (classdef classname (cast fields (Listof (U Symbol (List Symbol String)))))]
+    [(list 'dclass (? symbol? classname) (list fields ...))
+     (dclassdef classname fields)]
     [(cons 'class _) (err)]
     [_ (py-flatten-stmt exp)]))
 
@@ -381,6 +383,18 @@
     [#\" "\\\""]
     [otherchar (string otherchar)]))
 
+;; TYPES
+
+(define-type Py-Ty (U Symbol (Pairof 'U (Listof Py-Ty))))
+(define-predicate Py-Ty? Py-Ty)
+
+(define (py-flatten-ty [pt : Py-Ty]) : String
+  (match pt
+    [(? symbol? s) (~a s)]
+    [(list-rest 'U types)
+     (~a "Union[" (commasep (map py-flatten-ty types))"]")]))
+
+
 ;; flatten args; if we see a keyword, turn it into a
 ;; foo=bar pair. So, e.g., '(3 4 #:abc 5 6) => '("3" "4" "abc=5" "6")
 (define (py-flatten-args [args : (Listof Sexp)]) : (Listof String)
@@ -512,6 +526,26 @@
       (eqdef classname names))))))
 
 
+;; given a classname and a list of fields, return
+;; a block representing a python dataclass definition
+(define (dclassdef [classname : Symbol]
+                   [fields : (Listof Sexp)]) : Block
+  (cons
+   "@dataclass"
+  (block-indent
+   (cons
+    (~a "class "classname":")
+    (map dclassfield fields)))))
+
+;; given a dclassfield, output the field line
+(define (dclassfield [fieldspec : Sexp])
+  (match fieldspec
+    [(list (? symbol? name) (? Py-Ty? type))
+     (~a name " : " (py-flatten-ty type))]
+    [(list (? symbol? name) (? Py-Ty? type) (? string? comment))
+     (~a name " : " (py-flatten-ty type) " # " comment)]))
+
+
 ;; given a list of fields, return a block representing
 ;; a standard __init__ function
 (define (init [fields : (Listof Fieldspec)]) : Block
@@ -557,8 +591,7 @@
           `((and
              (== (type other) ,classname)
              ,@(for/list : (Listof Sexp) ([a (in-list fields)])
-                 (ann `(== (o self ,a) (o other ,a))
-                      Sexp))))))
+                 `(== (o self ,a) (o other ,a)))))))
 
 (define (neqdef) : Block
   (py-def '(__ne__ self other)
@@ -830,6 +863,14 @@
    "    def __eq__(self, other):"
    "        return ((type(other) == Cons) and (self.first == other.first) and (self.rest == other.rest))"
    ))
+
+;; new dataclass version
+(check-equal?
+ (py-flatten-toplevel '(dclass Cons ([first Any] [rest MyList "the rest of the list"])))
+ '("@dataclass"
+   "class Cons:"
+   "    first : Any"
+   "    rest : MyList # the rest of the list"))
 
 (check-equal?
  (py-flatten-toplevel '(%% "abc\ndef" (+ 3 4)))
